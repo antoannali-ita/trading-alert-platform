@@ -39,6 +39,7 @@ class RefreshItem:
     entry_min: Decimal | None = None
     entry_max: Decimal | None = None
     max_buy: Decimal | None = None
+    trigger_levels: tuple[Decimal, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -77,11 +78,20 @@ class SessionRefreshRepository(Protocol):
 
 
 def _next_check_for_refresh(now: datetime, item: RefreshItem, price: MarketPrice, polling: PollingConfig) -> datetime:
-    anchors = [x for x in (item.entry_min, item.entry_max, item.max_buy) if x is not None and x > 0]
+    anchors = [x for x in (*item.trigger_levels, item.entry_min, item.entry_max, item.max_buy) if x is not None and x > 0]
     if not anchors:
         return now + timedelta(minutes=polling.far_minutes)
     distance = min(abs(price.price - anchor) / price.price for anchor in anchors)
     return next_check_at(now, distance, polling)
+
+
+def _crossed_trigger_levels(previous_close: Decimal, open_price: Decimal, levels: Sequence[Decimal]) -> bool:
+    for level in levels:
+        before = previous_close - level
+        after = open_price - level
+        if before == 0 or after == 0 or (before > 0) != (after > 0):
+            return True
+    return False
 
 
 def run_session_refresh_batch(
@@ -99,8 +109,7 @@ def run_session_refresh_batch(
     started = session.refresh_started_at or current
     if current >= started + timedelta(minutes=config.max_duration_minutes):
         repo.expire_session_refresh_if_needed(session.id, worker_id)
-        pending = repo.session_refresh_pending_count(session.id, worker_id)
-        return SessionRefreshResult(session.id, "COMPLETED_WITH_PENDING", seeded, 0, 0, 0, 0, 0, 0, max(0, pending))
+        return SessionRefreshResult(session.id, "COMPLETED_WITH_PENDING", seeded, 0, 0, 0, 0, 0, 0, 0)
 
     items = tuple(repo.claim_session_refresh_items(session.id, worker_id, config.batch_limit))
     symbols = tuple(item.ticker for item in items)
@@ -162,6 +171,11 @@ def run_session_refresh_batch(
             max_buy=item.max_buy,
             thresholds=config.gap_thresholds,
         )
+        flags = list(gap.flags)
+        if item.trigger_levels and _crossed_trigger_levels(price.previous_close, price.open_price, item.trigger_levels):
+            flags.append("GAP_THROUGH_TRIGGER")
+        flags = list(dict.fromkeys(flags))
+
         quality = "DEGRADED" if price.data_quality != "PRIMARY_OK" else "UPDATED"
         data_quality = "FALLBACK_OK" if quality == "DEGRADED" else "PRIMARY_OK"
         repo.update_session_refresh_item(
@@ -177,7 +191,7 @@ def run_session_refresh_batch(
             provider=price.provider,
             data_quality=data_quality,
             gap_pct=gap.gap_pct,
-            gap_flags=list(gap.flags),
+            gap_flags=flags,
             error_code=None,
             next_retry_at=None,
         )
