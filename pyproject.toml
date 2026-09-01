@@ -7,6 +7,9 @@ name = "trading-alert-platform"
 version = "0.1.0"
 description = "Trading Alert Platform shadow worker"
 requires-python = ">=3.11"
+dependencies = [
+  "exchange-calendars>=4.5,<5",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
