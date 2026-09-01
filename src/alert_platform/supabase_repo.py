@@ -105,8 +105,12 @@ class SupabaseAlertRepository:
     def claim_session_refresh_items(self, session_id: UUID, worker_id: UUID, limit: int) -> Sequence[RefreshItem]:
         data = self._request("claim_session_refresh_items", {"p_session_id":str(session_id),"p_worker_id":str(worker_id),"p_limit":int(limit)})
         rows = data if isinstance(data,list) else []
-        return tuple(RefreshItem(id=UUID(r["id"]),ticker=r["ticker"],market=r["market"],priority_class=r["priority_class"],status=r["status"],
-            retry_count=int(r.get("retry_count",0)),entry_min=self._decimal(r.get("entry_min")),entry_max=self._decimal(r.get("entry_max")),max_buy=self._decimal(r.get("max_buy"))) for r in rows)
+        return tuple(RefreshItem(
+            id=UUID(r["id"]), ticker=r["ticker"], market=r["market"], priority_class=r["priority_class"], status=r["status"],
+            retry_count=int(r.get("retry_count",0)), entry_min=self._decimal(r.get("entry_min")), entry_max=self._decimal(r.get("entry_max")),
+            max_buy=self._decimal(r.get("max_buy")),
+            trigger_levels=tuple(self._decimal(v) for v in (r.get("trigger_levels") or []) if v is not None),
+        ) for r in rows)
 
     def update_session_refresh_item(self, session_id: UUID, worker_id: UUID, ticker: str, **fields) -> bool:
         payload={"p_session_id":str(session_id),"p_worker_id":str(worker_id),"p_ticker":ticker}
