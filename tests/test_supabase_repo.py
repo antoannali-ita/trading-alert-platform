@@ -1,6 +1,5 @@
 import json
 from datetime import datetime, timezone
-from io import BytesIO
 from uuid import UUID
 
 from alert_platform.supabase_repo import SupabaseAlertRepository, SupabaseSettings
@@ -34,6 +33,10 @@ def test_claim_parses_rows(monkeypatch):
         "id": "00000000-0000-0000-0000-000000000001",
         "ticker": "TSM",
         "market": "USA",
+        "alert_type": "PRICE_BELOW",
+        "threshold": "410.00",
+        "threshold_min": None,
+        "threshold_max": None,
         "valid_until": "2026-09-02T12:00:00+00:00",
         "next_check_at": "2026-09-01T12:00:00+00:00",
     }
@@ -48,6 +51,8 @@ def test_claim_parses_rows(monkeypatch):
 
     assert len(alerts) == 1
     assert alerts[0].ticker == "TSM"
+    assert alerts[0].alert_type == "PRICE_BELOW"
+    assert str(alerts[0].threshold) == "410.00"
     assert alerts[0].next_check_at.tzinfo is not None
 
 
