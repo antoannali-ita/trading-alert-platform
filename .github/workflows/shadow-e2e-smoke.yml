@@ -1,0 +1,80 @@
+name: Shadow E2E Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/shadow-e2e-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${SUPABASE_URL:-}"
+          test -n "${SUPABASE_SECRET_KEY:-}"
+          test -n "${TWELVE_DATA_API_KEY:-}"
+
+      - name: Run live SHADOW cycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=src python - <<'PY'
+          import os
+          from datetime import datetime, timezone
+
+          from alert_platform.providers.twelve_data import TwelveDataProvider
+          from alert_platform.supabase_repo import SupabaseAlertRepository, SupabaseSettings
+          from alert_platform.worker import WorkerConfig, run_shadow_cycle
+
+          class SmokeMarketHours:
+              # This workflow is a manual/commit smoke only. Production market-hours
+              # gating is implemented separately before scheduled activation.
+              def any_relevant_market_open(self, now):
+                  return True
+
+          repo = SupabaseAlertRepository(
+              SupabaseSettings(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SECRET_KEY'])
+          )
+          provider = TwelveDataProvider(os.environ['TWELVE_DATA_API_KEY'])
+          result = run_shadow_cycle(
+              repo,
+              SmokeMarketHours(),
+              WorkerConfig(
+                  claim_limit=5,
+                  enable_market_data=True,
+                  enable_auto_trigger=False,
+                  enable_v3=False,
+                  send_whatsapp=False,
+              ),
+              market_data=provider,
+              now=datetime.now(timezone.utc),
+          )
+
+          print({
+              'status': result.status,
+              'claimed': result.claimed,
+              'unique_tickers': result.unique_tickers,
+              'valid_prices': result.valid_prices,
+              'invalid_prices': result.invalid_prices,
+              'released': result.released,
+          })
+          if result.released != result.claimed:
+              raise SystemExit('Not all claimed alerts were safely released')
+          print('SHADOW_E2E_SMOKE_OK')
+          PY
