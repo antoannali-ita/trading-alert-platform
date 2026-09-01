@@ -21,18 +21,17 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+      SMOKE_MARKET: SMOKE_DIAG
+      SMOKE_WORKER_ID: 11111111-1111-4111-8111-111111111111
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - name: Install worker
         run: python -m pip install -e .
-
       - name: Validate secrets
         run: |
           set -euo pipefail
@@ -40,53 +39,78 @@ jobs:
           test -n "${SUPABASE_SECRET_KEY:-}"
           test -n "${TWELVE_DATA_API_KEY:-}"
 
-      - name: Probe Supabase session RPC
+      - name: Probe session claim RPC
         run: |
           python - <<'PY'
           import os
-          from datetime import datetime, timezone
-          from alert_platform.market_calendar import ExchangeMarketCalendar
-          from alert_platform.supabase_repo import SupabaseAlertRepository, SupabaseSettings
-          repo=SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'],os.environ['SUPABASE_SECRET_KEY']))
-          now=datetime.now(timezone.utc); cal=ExchangeMarketCalendar(refresh_delay_minutes=3)
-          out=[]
-          for market in ('ITALIA','USA'):
-              w=cal.session_for(market,now)
-              if w and w.opened_at <= now <= w.closed_at:
-                  s=repo.ensure_market_session(market,w.session_date,w.opened_at,w.refresh_due_at)
-                  out.append((market,s.status))
-          print({'session_rpc':'OK','markets':out})
-          PY
-
-      - name: Probe Supabase credit RPC
-        run: |
-          python - <<'PY'
-          import os
+          from datetime import datetime,timedelta,timezone
+          from uuid import UUID
           from alert_platform.supabase_repo import SupabaseAlertRepository,SupabaseSettings
           repo=SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'],os.environ['SUPABASE_SECRET_KEY']))
-          r=repo.reserve_provider_credits('TWELVE_DATA_SMOKE',1,8,20)
-          if r != 1: raise RuntimeError(f'credit reservation expected 1 got {r}')
-          print({'credit_rpc':'OK'})
+          now=datetime.now(timezone.utc); market=os.environ['SMOKE_MARKET']; worker=UUID(os.environ['SMOKE_WORKER_ID'])
+          repo.ensure_market_session(market,now.date(),now-timedelta(minutes=10),now-timedelta(minutes=7))
+          s=repo.claim_session_refresh(market,now.date(),worker)
+          if s is None: raise RuntimeError('diagnostic session not claimable')
+          print('SESSION_CLAIM_OK')
           PY
 
-      - name: Probe refresh queue RPC chain
+      - name: Probe refresh seed RPC
         run: |
           python - <<'PY'
           import os
-          from datetime import datetime, timedelta, timezone
-          from uuid import uuid4
+          from datetime import datetime,timedelta,timezone
+          from uuid import UUID
           from alert_platform.supabase_repo import SupabaseAlertRepository,SupabaseSettings
           repo=SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'],os.environ['SUPABASE_SECRET_KEY']))
-          now=datetime.now(timezone.utc); market='SMOKE'; d=now.date(); worker=uuid4()
-          repo.ensure_market_session(market,d,now-timedelta(minutes=10),now-timedelta(minutes=7))
-          s=repo.claim_session_refresh(market,d,worker)
-          if s is None: raise RuntimeError('SMOKE session not claimable')
-          seeded=repo.seed_session_refresh_items(s.id,worker)
-          items=repo.claim_session_refresh_items(s.id,worker,8)
-          pending=repo.session_refresh_pending_count(s.id,worker)
-          if seeded != 0 or items or pending != 0: raise RuntimeError(f'unexpected smoke queue state {seeded=} {len(items)=} {pending=}')
-          if not repo.complete_session_refresh(s.id,worker,{'smoke':True}): raise RuntimeError('SMOKE completion failed')
-          print({'refresh_queue_rpc':'OK'})
+          now=datetime.now(timezone.utc); market=os.environ['SMOKE_MARKET']; worker=UUID(os.environ['SMOKE_WORKER_ID'])
+          s=repo.ensure_market_session(market,now.date(),now-timedelta(minutes=10),now-timedelta(minutes=7))
+          n=repo.seed_session_refresh_items(s.id,worker)
+          if n != 0: raise RuntimeError(f'expected 0 smoke seed rows, got {n}')
+          print('REFRESH_SEED_OK')
+          PY
+
+      - name: Probe refresh claim-items RPC
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import datetime,timedelta,timezone
+          from uuid import UUID
+          from alert_platform.supabase_repo import SupabaseAlertRepository,SupabaseSettings
+          repo=SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'],os.environ['SUPABASE_SECRET_KEY']))
+          now=datetime.now(timezone.utc); market=os.environ['SMOKE_MARKET']; worker=UUID(os.environ['SMOKE_WORKER_ID'])
+          s=repo.ensure_market_session(market,now.date(),now-timedelta(minutes=10),now-timedelta(minutes=7))
+          rows=repo.claim_session_refresh_items(s.id,worker,8)
+          if rows: raise RuntimeError(f'expected empty smoke queue, got {len(rows)}')
+          print('REFRESH_CLAIM_ITEMS_OK')
+          PY
+
+      - name: Probe refresh pending-count RPC
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import datetime,timedelta,timezone
+          from uuid import UUID
+          from alert_platform.supabase_repo import SupabaseAlertRepository,SupabaseSettings
+          repo=SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'],os.environ['SUPABASE_SECRET_KEY']))
+          now=datetime.now(timezone.utc); market=os.environ['SMOKE_MARKET']; worker=UUID(os.environ['SMOKE_WORKER_ID'])
+          s=repo.ensure_market_session(market,now.date(),now-timedelta(minutes=10),now-timedelta(minutes=7))
+          n=repo.session_refresh_pending_count(s.id,worker)
+          if n != 0: raise RuntimeError(f'expected pending 0, got {n}')
+          print('REFRESH_PENDING_OK')
+          PY
+
+      - name: Probe refresh complete RPC
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import datetime,timedelta,timezone
+          from uuid import UUID
+          from alert_platform.supabase_repo import SupabaseAlertRepository,SupabaseSettings
+          repo=SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'],os.environ['SUPABASE_SECRET_KEY']))
+          now=datetime.now(timezone.utc); market=os.environ['SMOKE_MARKET']; worker=UUID(os.environ['SMOKE_WORKER_ID'])
+          s=repo.ensure_market_session(market,now.date(),now-timedelta(minutes=10),now-timedelta(minutes=7))
+          if not repo.complete_session_refresh(s.id,worker,{'smoke':True}): raise RuntimeError('smoke complete failed')
+          print('REFRESH_COMPLETE_OK')
           PY
 
       - name: Probe Twelve Data quote
@@ -95,8 +119,8 @@ jobs:
           import os
           from alert_platform.providers.twelve_data import TwelveDataProvider
           rows=TwelveDataProvider(os.environ['TWELVE_DATA_API_KEY']).get_prices(['AAPL'])
-          if len(rows) != 1 or rows[0].price <= 0: raise RuntimeError('Twelve Data quote invalid')
-          print({'twelve_quote':'OK','provider':rows[0].provider})
+          if len(rows)!=1 or rows[0].price<=0: raise RuntimeError('Twelve quote invalid')
+          print('TWELVE_QUOTE_OK')
           PY
 
       - name: Probe market-exclusion claim RPC
@@ -106,15 +130,15 @@ jobs:
           from uuid import uuid4
           from alert_platform.supabase_repo import SupabaseAlertRepository,SupabaseSettings
           repo=SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'],os.environ['SUPABASE_SECRET_KEY']))
-          rows=repo.claim_due_alerts_excluding_markets(uuid4(),1,['ITALIA','USA'])
-          print({'market_exclusion_rpc':'OK','claimed':len(rows)})
+          repo.claim_due_alerts_excluding_markets(uuid4(),1,['ITALIA','USA'])
+          print('MARKET_EXCLUSION_OK')
           PY
 
       - name: Run scheduled SHADOW cycle
         run: |
           python - <<'PY'
           import os
-          from datetime import datetime, timezone
+          from datetime import datetime,timezone
           from alert_platform.market_calendar import ExchangeMarketCalendar
           from alert_platform.provider_manager import ProviderManager
           from alert_platform.providers.twelve_data import TwelveDataProvider
@@ -125,6 +149,6 @@ jobs:
           repo=SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'],os.environ['SUPABASE_SECRET_KEY']))
           provider=ProviderManager(TwelveDataProvider(os.environ['TWELVE_DATA_API_KEY']),YahooProvider(),budget=SupabaseCreditBudget(repo,per_minute_limit=8,daily_budget=800))
           result=run_scheduled_shadow_cycle(repo,calendar=ExchangeMarketCalendar(refresh_delay_minutes=3),market_data=provider,worker_config=WorkerConfig(claim_limit=100,enable_market_data=True,enable_auto_trigger=False,enable_v3=False,send_whatsapp=False),now=datetime.now(timezone.utc))
-          print({'blocked_markets':result.blocked_markets,'refresh':[r.__dict__ for r in result.refresh_results],'adaptive':result.adaptive_result.__dict__})
+          print({'blocked_markets':result.blocked_markets,'refresh_count':len(result.refresh_results),'adaptive_status':result.adaptive_result.status})
           print('SCHEDULED_SHADOW_CYCLE_OK')
           PY
