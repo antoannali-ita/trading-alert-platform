@@ -41,6 +41,42 @@ jobs:
           test -n "${SUPABASE_SECRET_KEY:-}"
           test -n "${TWELVE_DATA_API_KEY:-}"
 
+      - name: Probe Supabase session RPC
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from datetime import datetime, timezone
+          from alert_platform.market_calendar import ExchangeMarketCalendar
+          from alert_platform.supabase_repo import SupabaseAlertRepository, SupabaseSettings
+
+          repo = SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SECRET_KEY']))
+          now = datetime.now(timezone.utc)
+          calendar = ExchangeMarketCalendar(refresh_delay_minutes=3)
+          windows = []
+          for market in ('ITALIA','USA'):
+              window = calendar.session_for(market, now)
+              if window and window.opened_at <= now <= window.closed_at:
+                  state = repo.ensure_market_session(market, window.session_date, window.opened_at, window.refresh_due_at)
+                  windows.append((market, state.status))
+          print({'session_rpc':'OK','markets':windows})
+          PY
+
+      - name: Probe Supabase credit RPC
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from alert_platform.supabase_repo import SupabaseAlertRepository, SupabaseSettings
+          repo = SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SECRET_KEY']))
+          reserved = repo.reserve_provider_credits('TWELVE_DATA_SMOKE', 1, 8, 20)
+          if reserved != 1:
+              raise RuntimeError(f'credit RPC expected 1, got {reserved}')
+          print({'credit_rpc':'OK','reserved':reserved})
+          PY
+
       - name: Run scheduled SHADOW cycle
         shell: bash
         run: |
@@ -54,63 +90,23 @@ jobs:
           from alert_platform.providers.twelve_data import TwelveDataProvider
           from alert_platform.providers.yahoo import YahooProvider
           from alert_platform.scheduled_worker import run_scheduled_shadow_cycle
-          from alert_platform.supabase_repo import (
-              SupabaseAlertRepository,
-              SupabaseCreditBudget,
-              SupabaseSettings,
-          )
+          from alert_platform.supabase_repo import SupabaseAlertRepository, SupabaseCreditBudget, SupabaseSettings
           from alert_platform.worker import WorkerConfig
 
-          repo = SupabaseAlertRepository(
-              SupabaseSettings(
-                  os.environ['SUPABASE_URL'],
-                  os.environ['SUPABASE_SECRET_KEY'],
-              )
-          )
+          repo = SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SECRET_KEY']))
           budget = SupabaseCreditBudget(repo, per_minute_limit=8, daily_budget=800)
-          provider = ProviderManager(
-              TwelveDataProvider(os.environ['TWELVE_DATA_API_KEY']),
-              YahooProvider(),
-              budget=budget,
-          )
+          provider = ProviderManager(TwelveDataProvider(os.environ['TWELVE_DATA_API_KEY']), YahooProvider(), budget=budget)
           result = run_scheduled_shadow_cycle(
               repo,
               calendar=ExchangeMarketCalendar(refresh_delay_minutes=3),
               market_data=provider,
-              worker_config=WorkerConfig(
-                  claim_limit=100,
-                  enable_market_data=True,
-                  enable_auto_trigger=False,
-                  enable_v3=False,
-                  send_whatsapp=False,
-              ),
+              worker_config=WorkerConfig(claim_limit=100, enable_market_data=True, enable_auto_trigger=False, enable_v3=False, send_whatsapp=False),
               now=datetime.now(timezone.utc),
           )
-
           print({
               'blocked_markets': result.blocked_markets,
-              'refresh': [
-                  {
-                      'status': r.status,
-                      'seeded': r.seeded,
-                      'claimed_items': r.claimed_items,
-                      'updated': r.updated,
-                      'degraded': r.degraded,
-                      'pending_open': r.pending_open,
-                      'no_open_data': r.no_open_data,
-                      'failed': r.failed,
-                      'pending_remaining': r.pending_remaining,
-                  }
-                  for r in result.refresh_results
-              ],
-              'adaptive': {
-                  'status': result.adaptive_result.status,
-                  'claimed': result.adaptive_result.claimed,
-                  'unique_tickers': result.adaptive_result.unique_tickers,
-                  'valid_prices': result.adaptive_result.valid_prices,
-                  'invalid_prices': result.adaptive_result.invalid_prices,
-                  'released': result.adaptive_result.released,
-              },
+              'refresh': [r.__dict__ for r in result.refresh_results],
+              'adaptive': result.adaptive_result.__dict__,
           })
           print('SCHEDULED_SHADOW_CYCLE_OK')
           PY
