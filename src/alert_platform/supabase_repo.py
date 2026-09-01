@@ -1,7 +1,4 @@
-"""Supabase REST/RPC adapter for the alert-platform worker.
-
-Uses backend-only credentials from environment. This module does not embed secrets.
-"""
+"""Supabase REST/RPC adapter for the alert-platform worker."""
 
 from __future__ import annotations
 
@@ -86,3 +83,35 @@ class SupabaseAlertRepository:
             {"p_alert_id": str(alert_id), "p_worker_id": str(worker_id), "p_next_check_at": next_check_at.isoformat()},
         )
         return bool(data)
+
+    def record_alert_run(
+        self,
+        *,
+        worker_id: UUID,
+        alert_id: UUID,
+        ticker: str,
+        price: Decimal | None,
+        price_timestamp: datetime | None,
+        provider: str | None,
+        trigger_hit: bool | None,
+        error_code: str | None,
+        duration_ms: int | None = None,
+    ) -> int:
+        data = self._request(
+            "record_alert_run",
+            {
+                "p_worker_id": str(worker_id),
+                "p_alert_id": str(alert_id),
+                "p_ticker": ticker,
+                "p_price": str(price) if price is not None else None,
+                "p_price_timestamp": price_timestamp.isoformat() if price_timestamp else None,
+                "p_provider": provider,
+                "p_trigger_hit": trigger_hit,
+                "p_error_code": error_code,
+                "p_duration_ms": duration_ms,
+            },
+        )
+        row = data[0] if isinstance(data, list) and data else data
+        if not isinstance(row, dict):
+            return 0
+        return int(row.get("retry_count", 0))
