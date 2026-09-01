@@ -2,6 +2,9 @@ name: Scheduled Shadow Worker
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/scheduled-shadow-worker.yml'
 
 permissions:
   contents: read
