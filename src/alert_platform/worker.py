@@ -1,8 +1,4 @@
-"""Shadow worker orchestration for Trading Alert Platform v1.2 FINAL.
-
-This stage allows live market-data reads and adaptive rescheduling in SHADOW mode
-while keeping automatic trigger transitions, V3 execution and notifications off.
-"""
+"""Shadow worker orchestration for Trading Alert Platform v1.2 FINAL."""
 
 from __future__ import annotations
 
@@ -43,6 +39,19 @@ class WorkerConfig:
 class AlertRepository(Protocol):
     def claim_due_alerts(self, worker_id: UUID, limit: int) -> Sequence[ClaimedAlert]: ...
     def release_alert(self, alert_id: UUID, worker_id: UUID, next_check_at: datetime) -> bool: ...
+    def record_alert_run(
+        self,
+        *,
+        worker_id: UUID,
+        alert_id: UUID,
+        ticker: str,
+        price: Decimal | None,
+        price_timestamp: datetime | None,
+        provider: str | None,
+        trigger_hit: bool | None,
+        error_code: str | None,
+        duration_ms: int | None = None,
+    ) -> int: ...
 
 
 class MarketHours(Protocol):
@@ -65,6 +74,13 @@ def _guard_shadow_capabilities(config: WorkerConfig) -> None:
         raise RuntimeError("Shadow worker cannot enable auto-trigger, V3 or WhatsApp")
 
 
+def _record_run_if_supported(repo, **kwargs) -> int:
+    recorder = getattr(repo, "record_alert_run", None)
+    if recorder is None:
+        return 0
+    return int(recorder(**kwargs))
+
+
 def run_shadow_cycle(
     repo: AlertRepository,
     market_hours: MarketHours,
@@ -73,15 +89,9 @@ def run_shadow_cycle(
     market_data: MarketDataProvider | None = None,
     now: datetime | None = None,
 ) -> WorkerResult:
-    """Run one SHADOW worker cycle.
-
-    Claims due alerts, performs one market-data read per unique ticker, validates
-    freshness and safely releases each alert back to ACTIVE with adaptive
-    next_check_at. It never transitions to TRIGGERED and never invokes V3 or sends.
-    """
+    """Run one SHADOW worker cycle without trigger/V3/WhatsApp side effects."""
 
     _guard_shadow_capabilities(config)
-
     current_time = now or datetime.now(timezone.utc)
     worker_id = uuid4()
 
@@ -92,17 +102,15 @@ def run_shadow_cycle(
     unique_tickers = tuple(dict.fromkeys(a.ticker.upper() for a in claimed))
 
     if not config.enable_market_data:
-        return WorkerResult(
-            worker_id=worker_id,
-            status="SHADOW_OK",
-            claimed=len(claimed),
-            unique_tickers=len(unique_tickers),
-        )
+        return WorkerResult(worker_id=worker_id, status="SHADOW_OK", claimed=len(claimed), unique_tickers=len(unique_tickers))
 
     if market_data is None:
         raise RuntimeError("market_data provider is required when enable_market_data=true")
 
-    prices: Sequence[MarketPrice] = market_data.get_prices(unique_tickers)
+    try:
+        prices: Sequence[MarketPrice] = market_data.get_prices(unique_tickers)
+    except Exception:
+        prices = ()
     by_ticker = {price.ticker.upper(): price for price in prices}
 
     valid_prices = 0
@@ -111,11 +119,7 @@ def run_shadow_cycle(
 
     for alert in claimed:
         price = by_ticker.get(alert.ticker.upper())
-        valid, _code = validate_market_price(
-            price,
-            max_price_age_seconds=config.max_price_age_seconds,
-            now=current_time,
-        )
+        valid, code = validate_market_price(price, max_price_age_seconds=config.max_price_age_seconds, now=current_time)
 
         if valid and price is not None:
             valid_prices += 1
@@ -127,11 +131,33 @@ def run_shadow_cycle(
                 threshold_max=alert.threshold_max,
             )
             release_at = next_check_at(current_time, distance, config.polling)
+            _record_run_if_supported(
+                repo,
+                worker_id=worker_id,
+                alert_id=alert.id,
+                ticker=alert.ticker,
+                price=price.price,
+                price_timestamp=price.timestamp,
+                provider=price.provider,
+                trigger_hit=None,
+                error_code=None,
+                duration_ms=None,
+            )
         else:
             invalid_prices += 1
-            # First market-data retry from the approved spec: +1 minute.
-            # The +5m second retry is added when alert_runs error persistence is wired.
-            release_at = current_time + timedelta(minutes=1)
+            retry_count = _record_run_if_supported(
+                repo,
+                worker_id=worker_id,
+                alert_id=alert.id,
+                ticker=alert.ticker,
+                price=price.price if price else None,
+                price_timestamp=price.timestamp if price else None,
+                provider=price.provider if price else None,
+                trigger_hit=None,
+                error_code=code,
+                duration_ms=None,
+            )
+            release_at = current_time + timedelta(minutes=1 if retry_count <= 0 else 5)
 
         if repo.release_alert(alert.id, worker_id, release_at):
             released += 1
