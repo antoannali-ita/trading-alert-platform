@@ -2,6 +2,9 @@ name: Twelve Data Smoke
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/twelve-data-smoke.yml'
 
 permissions:
   contents: read
