@@ -35,7 +35,8 @@ begin
 
   perform pg_advisory_xact_lock(hashtext(v_provider));
 
-  select coalesce(credits_used,0) into v_minute_used
+  -- Aggregate guarantees one row, so an unused minute correctly starts at zero.
+  select coalesce(max(credits_used),0) into v_minute_used
     from alert_platform.provider_credit_usage
    where provider=v_provider and minute_bucket=v_bucket;
 
