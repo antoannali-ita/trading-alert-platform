@@ -2,8 +2,11 @@ name: Scheduled Shadow Worker
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/scheduled-shadow-worker.yml'
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '2-57/5 * * * *'
 
 permissions:
   contents: read
