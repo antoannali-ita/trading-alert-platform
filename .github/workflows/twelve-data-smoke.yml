@@ -1,0 +1,90 @@
+name: Twelve Data Smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate secret exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${TWELVE_DATA_API_KEY:-}" ]; then
+            echo "TWELVE_DATA_API_KEY is missing"
+            exit 1
+          fi
+          echo "TWELVE_DATA_API_KEY is configured"
+
+      - name: Live Twelve Data smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timezone
+
+          api_key = os.environ['TWELVE_DATA_API_KEY']
+          params = urllib.parse.urlencode({
+              'symbol': 'AAPL',
+              'apikey': api_key,
+          })
+          url = f'https://api.twelvedata.com/quote?{params}'
+
+          req = urllib.request.Request(url, headers={'User-Agent': 'trading-alert-platform-smoke/1.0'})
+          with urllib.request.urlopen(req, timeout=20) as resp:
+              payload = json.load(resp)
+
+          if payload.get('status') == 'error' or payload.get('code'):
+              raise SystemExit(f"Twelve Data error: {payload.get('message', payload)}")
+
+          symbol = payload.get('symbol')
+          close = payload.get('close')
+          ts = payload.get('timestamp')
+          dt = payload.get('datetime')
+
+          if symbol != 'AAPL':
+              raise SystemExit(f'Unexpected symbol: {symbol!r}')
+          if close is None:
+              raise SystemExit('Missing close price')
+          try:
+              price = float(close)
+          except (TypeError, ValueError) as exc:
+              raise SystemExit(f'Invalid close price: {close!r}') from exc
+          if price <= 0:
+              raise SystemExit(f'Non-positive price: {price}')
+
+          if ts is not None:
+              try:
+                  stamp = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+                  stamp_text = stamp.isoformat()
+              except Exception:
+                  stamp_text = str(ts)
+          else:
+              stamp_text = str(dt)
+
+          print(json.dumps({
+              'provider': 'TWELVE_DATA',
+              'symbol': symbol,
+              'price': price,
+              'provider_timestamp': stamp_text,
+              'status': 'OK'
+          }))
+          PY
