@@ -1,8 +1,4 @@
-"""Twelve Data market-data adapter.
-
-The adapter is dependency-light and uses urllib so the public worker can stay thin.
-No API key is stored in source control; it must be supplied at runtime.
-"""
+"""Twelve Data market-data adapter."""
 
 from __future__ import annotations
 
@@ -21,8 +17,6 @@ class TwelveDataError(RuntimeError):
 
 
 class TwelveDataProvider:
-    # /quote includes both a market price and a provider-side timestamp.  The
-    # worker therefore does not manufacture freshness from its own wall clock.
     base_url = "https://api.twelvedata.com/quote"
 
     def __init__(self, api_key: str, *, timeout_seconds: float = 10.0):
@@ -31,13 +25,16 @@ class TwelveDataProvider:
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
 
+    @staticmethod
+    def _decimal(value):
+        if value in (None, ""):
+            return None
+        return Decimal(str(value))
+
     def get_prices(self, symbols: Sequence[str]) -> Sequence[MarketPrice]:
         unique = tuple(dict.fromkeys(s.strip().upper() for s in symbols if s.strip()))
         if not unique:
             return ()
-
-        # MVP keeps one request per unique symbol behind the provider abstraction.
-        # The worker already de-duplicates symbols, so this is one read per ticker.
         return tuple(self._get_one(symbol) for symbol in unique)
 
     def _get_one(self, symbol: str) -> MarketPrice:
@@ -47,11 +44,12 @@ class TwelveDataProvider:
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-        except Exception as exc:  # network/provider errors are normalized here
+        except Exception as exc:
             raise TwelveDataError(f"Twelve Data request failed for {symbol}") from exc
 
         if payload.get("status") == "error" or payload.get("code"):
-            raise TwelveDataError(payload.get("message") or f"Twelve Data error for {symbol}")
+            message = payload.get("message") or f"Twelve Data error for {symbol}"
+            raise TwelveDataError(message)
 
         raw_price = payload.get("close")
         raw_timestamp = payload.get("timestamp")
@@ -73,4 +71,10 @@ class TwelveDataProvider:
             timestamp=provider_timestamp,
             market_status=str(payload.get("is_market_open", "UNKNOWN")),
             provider="TWELVE_DATA",
+            data_quality="PRIMARY_OK",
+            open_price=self._decimal(payload.get("open")),
+            previous_close=self._decimal(payload.get("previous_close")),
+            high_price=self._decimal(payload.get("high")),
+            low_price=self._decimal(payload.get("low")),
+            volume=self._decimal(payload.get("volume")),
         )
