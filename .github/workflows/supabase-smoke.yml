@@ -1,0 +1,67 @@
+name: Supabase Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/supabase-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate secrets exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${SUPABASE_URL:-}" || { echo 'SUPABASE_URL is missing'; exit 1; }
+          test -n "${SUPABASE_SECRET_KEY:-}" || { echo 'SUPABASE_SECRET_KEY is missing'; exit 1; }
+          echo 'Supabase secrets are configured'
+
+      - name: Live Supabase RPC smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=src python - <<'PY'
+          import os
+          from datetime import datetime, timedelta, timezone
+          from uuid import uuid4
+
+          from alert_platform.supabase_repo import SupabaseAlertRepository, SupabaseSettings
+
+          repo = SupabaseAlertRepository(
+              SupabaseSettings(
+                  os.environ['SUPABASE_URL'],
+                  os.environ['SUPABASE_SECRET_KEY'],
+              )
+          )
+          worker_id = uuid4()
+          alerts = repo.claim_due_alerts(worker_id, 5)
+          print(f'RPC claim_due_alerts reachable; claimed={len(alerts)}')
+
+          for alert in alerts:
+              ok = repo.release_alert(
+                  alert.id,
+                  worker_id,
+                  datetime.now(timezone.utc) + timedelta(minutes=5),
+              )
+              if not ok:
+                  raise SystemExit(f'Failed to release claimed alert {alert.id}')
+              print(f'Released {alert.ticker} safely back to ACTIVE')
+
+          print('SUPABASE_SMOKE_OK')
+          PY
