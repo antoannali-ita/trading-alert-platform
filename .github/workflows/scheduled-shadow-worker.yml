@@ -34,7 +34,6 @@ jobs:
         run: python -m pip install -e .
 
       - name: Validate secrets
-        shell: bash
         run: |
           set -euo pipefail
           test -n "${SUPABASE_URL:-}"
@@ -42,71 +41,90 @@ jobs:
           test -n "${TWELVE_DATA_API_KEY:-}"
 
       - name: Probe Supabase session RPC
-        shell: bash
         run: |
-          set -euo pipefail
           python - <<'PY'
           import os
           from datetime import datetime, timezone
           from alert_platform.market_calendar import ExchangeMarketCalendar
           from alert_platform.supabase_repo import SupabaseAlertRepository, SupabaseSettings
-
-          repo = SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SECRET_KEY']))
-          now = datetime.now(timezone.utc)
-          calendar = ExchangeMarketCalendar(refresh_delay_minutes=3)
-          windows = []
+          repo=SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'],os.environ['SUPABASE_SECRET_KEY']))
+          now=datetime.now(timezone.utc); cal=ExchangeMarketCalendar(refresh_delay_minutes=3)
+          out=[]
           for market in ('ITALIA','USA'):
-              window = calendar.session_for(market, now)
-              if window and window.opened_at <= now <= window.closed_at:
-                  state = repo.ensure_market_session(market, window.session_date, window.opened_at, window.refresh_due_at)
-                  windows.append((market, state.status))
-          print({'session_rpc':'OK','markets':windows})
+              w=cal.session_for(market,now)
+              if w and w.opened_at <= now <= w.closed_at:
+                  s=repo.ensure_market_session(market,w.session_date,w.opened_at,w.refresh_due_at)
+                  out.append((market,s.status))
+          print({'session_rpc':'OK','markets':out})
           PY
 
       - name: Probe Supabase credit RPC
-        shell: bash
         run: |
-          set -euo pipefail
           python - <<'PY'
           import os
-          from alert_platform.supabase_repo import SupabaseAlertRepository, SupabaseSettings
-          repo = SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SECRET_KEY']))
-          reserved = repo.reserve_provider_credits('TWELVE_DATA_SMOKE', 1, 8, 20)
-          if reserved != 1:
-              raise RuntimeError(f'credit RPC expected 1, got {reserved}')
-          print({'credit_rpc':'OK','reserved':reserved})
+          from alert_platform.supabase_repo import SupabaseAlertRepository,SupabaseSettings
+          repo=SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'],os.environ['SUPABASE_SECRET_KEY']))
+          r=repo.reserve_provider_credits('TWELVE_DATA_SMOKE',1,8,20)
+          if r != 1: raise RuntimeError(f'credit reservation expected 1 got {r}')
+          print({'credit_rpc':'OK'})
+          PY
+
+      - name: Probe refresh queue RPC chain
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import datetime, timedelta, timezone
+          from uuid import uuid4
+          from alert_platform.supabase_repo import SupabaseAlertRepository,SupabaseSettings
+          repo=SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'],os.environ['SUPABASE_SECRET_KEY']))
+          now=datetime.now(timezone.utc); market='SMOKE'; d=now.date(); worker=uuid4()
+          repo.ensure_market_session(market,d,now-timedelta(minutes=10),now-timedelta(minutes=7))
+          s=repo.claim_session_refresh(market,d,worker)
+          if s is None: raise RuntimeError('SMOKE session not claimable')
+          seeded=repo.seed_session_refresh_items(s.id,worker)
+          items=repo.claim_session_refresh_items(s.id,worker,8)
+          pending=repo.session_refresh_pending_count(s.id,worker)
+          if seeded != 0 or items or pending != 0: raise RuntimeError(f'unexpected smoke queue state {seeded=} {len(items)=} {pending=}')
+          if not repo.complete_session_refresh(s.id,worker,{'smoke':True}): raise RuntimeError('SMOKE completion failed')
+          print({'refresh_queue_rpc':'OK'})
+          PY
+
+      - name: Probe Twelve Data quote
+        run: |
+          python - <<'PY'
+          import os
+          from alert_platform.providers.twelve_data import TwelveDataProvider
+          rows=TwelveDataProvider(os.environ['TWELVE_DATA_API_KEY']).get_prices(['AAPL'])
+          if len(rows) != 1 or rows[0].price <= 0: raise RuntimeError('Twelve Data quote invalid')
+          print({'twelve_quote':'OK','provider':rows[0].provider})
+          PY
+
+      - name: Probe market-exclusion claim RPC
+        run: |
+          python - <<'PY'
+          import os
+          from uuid import uuid4
+          from alert_platform.supabase_repo import SupabaseAlertRepository,SupabaseSettings
+          repo=SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'],os.environ['SUPABASE_SECRET_KEY']))
+          rows=repo.claim_due_alerts_excluding_markets(uuid4(),1,['ITALIA','USA'])
+          print({'market_exclusion_rpc':'OK','claimed':len(rows)})
           PY
 
       - name: Run scheduled SHADOW cycle
-        shell: bash
         run: |
-          set -euo pipefail
           python - <<'PY'
           import os
           from datetime import datetime, timezone
-
           from alert_platform.market_calendar import ExchangeMarketCalendar
           from alert_platform.provider_manager import ProviderManager
           from alert_platform.providers.twelve_data import TwelveDataProvider
           from alert_platform.providers.yahoo import YahooProvider
           from alert_platform.scheduled_worker import run_scheduled_shadow_cycle
-          from alert_platform.supabase_repo import SupabaseAlertRepository, SupabaseCreditBudget, SupabaseSettings
+          from alert_platform.supabase_repo import SupabaseAlertRepository,SupabaseCreditBudget,SupabaseSettings
           from alert_platform.worker import WorkerConfig
-
-          repo = SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SECRET_KEY']))
-          budget = SupabaseCreditBudget(repo, per_minute_limit=8, daily_budget=800)
-          provider = ProviderManager(TwelveDataProvider(os.environ['TWELVE_DATA_API_KEY']), YahooProvider(), budget=budget)
-          result = run_scheduled_shadow_cycle(
-              repo,
-              calendar=ExchangeMarketCalendar(refresh_delay_minutes=3),
-              market_data=provider,
-              worker_config=WorkerConfig(claim_limit=100, enable_market_data=True, enable_auto_trigger=False, enable_v3=False, send_whatsapp=False),
-              now=datetime.now(timezone.utc),
-          )
-          print({
-              'blocked_markets': result.blocked_markets,
-              'refresh': [r.__dict__ for r in result.refresh_results],
-              'adaptive': result.adaptive_result.__dict__,
-          })
+          repo=SupabaseAlertRepository(SupabaseSettings(os.environ['SUPABASE_URL'],os.environ['SUPABASE_SECRET_KEY']))
+          provider=ProviderManager(TwelveDataProvider(os.environ['TWELVE_DATA_API_KEY']),YahooProvider(),budget=SupabaseCreditBudget(repo,per_minute_limit=8,daily_budget=800))
+          result=run_scheduled_shadow_cycle(repo,calendar=ExchangeMarketCalendar(refresh_delay_minutes=3),market_data=provider,worker_config=WorkerConfig(claim_limit=100,enable_market_data=True,enable_auto_trigger=False,enable_v3=False,send_whatsapp=False),now=datetime.now(timezone.utc))
+          print({'blocked_markets':result.blocked_markets,'refresh':[r.__dict__ for r in result.refresh_results],'adaptive':result.adaptive_result.__dict__})
           print('SCHEDULED_SHADOW_CYCLE_OK')
           PY
