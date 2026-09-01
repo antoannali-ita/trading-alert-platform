@@ -15,6 +15,12 @@ class MarketPrice:
     timestamp: datetime
     market_status: str
     provider: str
+    data_quality: str = "PRIMARY_OK"
+    open_price: Decimal | None = None
+    previous_close: Decimal | None = None
+    high_price: Decimal | None = None
+    low_price: Decimal | None = None
+    volume: Decimal | None = None
 
 
 class MarketDataProvider(Protocol):
