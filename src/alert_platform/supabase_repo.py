@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Sequence
 from uuid import UUID
 
@@ -57,23 +58,24 @@ class SupabaseAlertRepository:
             raise RuntimeError(f"Supabase RPC {path} transport error: {exc}") from exc
         return json.loads(raw) if raw else None
 
+    @staticmethod
+    def _decimal(value: object) -> Decimal | None:
+        return None if value is None else Decimal(str(value))
+
     def claim_due_alerts(self, worker_id: UUID, limit: int) -> Sequence[ClaimedAlert]:
-        data = self._request(
-            "claim_due_alerts",
-            {"p_worker_id": str(worker_id), "p_limit": int(limit)},
-        )
+        data = self._request("claim_due_alerts", {"p_worker_id": str(worker_id), "p_limit": int(limit)})
         rows = data if isinstance(data, list) else []
         return tuple(
             ClaimedAlert(
                 id=UUID(row["id"]),
                 ticker=row["ticker"],
                 market=row["market"],
+                alert_type=row["alert_type"],
+                threshold=self._decimal(row.get("threshold")),
+                threshold_min=self._decimal(row.get("threshold_min")),
+                threshold_max=self._decimal(row.get("threshold_max")),
                 valid_until=datetime.fromisoformat(row["valid_until"].replace("Z", "+00:00")),
-                next_check_at=(
-                    datetime.fromisoformat(row["next_check_at"].replace("Z", "+00:00"))
-                    if row.get("next_check_at")
-                    else None
-                ),
+                next_check_at=(datetime.fromisoformat(row["next_check_at"].replace("Z", "+00:00")) if row.get("next_check_at") else None),
             )
             for row in rows
         )
@@ -81,10 +83,6 @@ class SupabaseAlertRepository:
     def release_alert(self, alert_id: UUID, worker_id: UUID, next_check_at: datetime) -> bool:
         data = self._request(
             "release_alert",
-            {
-                "p_alert_id": str(alert_id),
-                "p_worker_id": str(worker_id),
-                "p_next_check_at": next_check_at.isoformat(),
-            },
+            {"p_alert_id": str(alert_id), "p_worker_id": str(worker_id), "p_next_check_at": next_check_at.isoformat()},
         )
         return bool(data)
