@@ -1,8 +1,9 @@
-name: Scheduled Shadow Worker
+name: Production Alert Worker
 
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - '.github/workflows/scheduled-shadow-worker.yml'
   schedule:
@@ -12,17 +13,20 @@ permissions:
   contents: read
 
 concurrency:
-  group: scheduled-shadow-worker
+  group: production-alert-worker
   cancel-in-progress: false
 
 jobs:
-  shadow:
+  alerts:
     runs-on: ubuntu-latest
     timeout-minutes: 4
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
       TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+      WHATSAPP_NUMBER: ${{ secrets.WHATSAPP_NUMBER }}
+      CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,6 +39,15 @@ jobs:
       - name: Install worker
         run: python -m pip install -e .
 
+      - name: Apply production cutover on deployment
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${SUPABASE_DB_URL:-}"
+          psql "${SUPABASE_DB_URL}" -v ON_ERROR_STOP=1 \
+            -f supabase/migrations/20260902_001_production_cutover.sql
+
       - name: Validate secrets
         shell: bash
         run: |
@@ -42,8 +55,10 @@ jobs:
           test -n "${SUPABASE_URL:-}"
           test -n "${SUPABASE_SECRET_KEY:-}"
           test -n "${TWELVE_DATA_API_KEY:-}"
+          test -n "${WHATSAPP_NUMBER:-}"
+          test -n "${CALLMEBOT_APIKEY:-}"
 
-      - name: Run scheduled SHADOW cycle
+      - name: Run production alert cycle
         shell: bash
         run: |
           set -euo pipefail
@@ -55,13 +70,13 @@ jobs:
           from alert_platform.provider_manager import ProviderManager
           from alert_platform.providers.twelve_data import TwelveDataProvider
           from alert_platform.providers.yahoo import YahooProvider
-          from alert_platform.scheduled_worker import run_scheduled_shadow_cycle
+          from alert_platform.live_worker import run_live_cycle
           from alert_platform.supabase_repo import (
               SupabaseAlertRepository,
               SupabaseCreditBudget,
               SupabaseSettings,
           )
-          from alert_platform.worker import WorkerConfig
+          from alert_platform.whatsapp import send_callmebot
 
           repo = SupabaseAlertRepository(
               SupabaseSettings(
@@ -75,44 +90,15 @@ jobs:
               YahooProvider(),
               budget=budget,
           )
-          result = run_scheduled_shadow_cycle(
-              repo,
-              calendar=ExchangeMarketCalendar(refresh_delay_minutes=3),
-              market_data=provider,
-              worker_config=WorkerConfig(
-                  claim_limit=100,
-                  enable_market_data=True,
-                  enable_auto_trigger=False,
-                  enable_v3=False,
-                  send_whatsapp=False,
+          result = run_live_cycle(
+              repo, ExchangeMarketCalendar(refresh_delay_minutes=3), provider,
+              lambda message: send_callmebot(
+                  os.environ['WHATSAPP_NUMBER'], os.environ['CALLMEBOT_APIKEY'], message
               ),
               now=datetime.now(timezone.utc),
           )
-
-          print({
-              'blocked_markets': result.blocked_markets,
-              'refresh': [
-                  {
-                      'status': r.status,
-                      'seeded': r.seeded,
-                      'claimed_items': r.claimed_items,
-                      'updated': r.updated,
-                      'degraded': r.degraded,
-                      'pending_open': r.pending_open,
-                      'no_open_data': r.no_open_data,
-                      'failed': r.failed,
-                      'pending_remaining': r.pending_remaining,
-                  }
-                  for r in result.refresh_results
-              ],
-              'adaptive': {
-                  'status': result.adaptive_result.status,
-                  'claimed': result.adaptive_result.claimed,
-                  'unique_tickers': result.adaptive_result.unique_tickers,
-                  'valid_prices': result.adaptive_result.valid_prices,
-                  'invalid_prices': result.adaptive_result.invalid_prices,
-                  'released': result.adaptive_result.released,
-              },
-          })
-          print('SCHEDULED_SHADOW_CYCLE_OK')
+          print(result)
+          if result.errors:
+              raise SystemExit(f"PRODUCTION_ALERT_ERRORS={result.errors}")
+          print('PRODUCTION_ALERT_CYCLE_OK')
           PY
