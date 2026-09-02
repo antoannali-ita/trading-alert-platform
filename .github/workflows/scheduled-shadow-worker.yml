@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: production-alert-worker
@@ -102,5 +103,14 @@ jobs:
               raise SystemExit(f"PRODUCTION_ALERT_ERRORS={result.errors}")
           print('PRODUCTION_ALERT_CYCLE_OK')
           PY
+
+      - name: Publish cutover verification
+        if: always() && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "Alert cutover verification ${{ job.status }}" \
+            --body "Workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\nCommit: ${{ github.sha }}\nResult: ${{ job.status }}"
 
 # Production cutover deployed 2026-09-02
