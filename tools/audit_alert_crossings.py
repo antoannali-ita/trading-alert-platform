@@ -6,6 +6,7 @@ import json
 import os
 import urllib.parse
 import urllib.request
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -88,6 +89,7 @@ def crossed(alert: dict, low: Decimal, high: Decimal) -> bool:
 
 
 def main() -> int:
+    print("SUPABASE_HOST", urlsplit(os.environ["SUPABASE_URL"]).hostname)
     alerts = load_alerts()
     summary = {"total": len(alerts), "crossed": 0, "not_crossed": 0, "errors": 0}
     print(f"AUDIT_ALERTS total={len(alerts)}")
