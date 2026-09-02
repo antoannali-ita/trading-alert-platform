@@ -78,6 +78,17 @@ class SupabaseAlertRepository:
     def release_alert(self, alert_id: UUID, worker_id: UUID, next_check_at: datetime) -> bool:
         return bool(self._request("release_alert", {"p_alert_id":str(alert_id),"p_worker_id":str(worker_id),"p_next_check_at":next_check_at.isoformat()}))
 
+    def create_trigger_event(self, worker_id: UUID, alert_ids: Sequence[UUID], ticker: str,
+                             market: str, price: Decimal, price_at: datetime,
+                             provider: str, policy: str) -> UUID:
+        value = self._request("create_trigger_event", {
+            "p_worker_id": str(worker_id), "p_alert_ids": [str(x) for x in alert_ids],
+            "p_ticker": ticker, "p_market": market, "p_trigger_price": str(price),
+            "p_trigger_price_at": price_at.isoformat(), "p_provider": provider,
+            "p_effective_policy": policy,
+        })
+        return UUID(str(value))
+
     def record_alert_run(self, *, worker_id: UUID, alert_id: UUID, ticker: str, price: Decimal | None,
                          price_timestamp: datetime | None, provider: str | None, trigger_hit: bool | None,
                          error_code: str | None, duration_ms: int | None = None) -> int:
