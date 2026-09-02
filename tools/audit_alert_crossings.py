@@ -39,7 +39,45 @@ def load_alerts() -> list[dict]:
             "User-Agent": "trading-alert-platform-audit/1.0",
         },
     )
-    return data if isinstance(data, list) else []
+    rows = data if isinstance(data, list) else []
+    if rows:
+        return rows
+
+    # Cutover recovery: migration 014 archived the site-created rules before
+    # alert_platform.alerts was populated. Audit those rows instead of reporting
+    # a misleading empty result.
+    legacy_select = (
+        "alert_id,ticker,market,condition_type,trigger_level,status,created_at,"
+        "expires_at,triggered_at,last_price"
+    )
+    legacy_query = urllib.parse.urlencode({"select": legacy_select, "order": "created_at.asc", "limit": "3000"})
+    legacy = _get_json(
+        f"{base}/rest/v1/trading_alerts_legacy_archive?{legacy_query}",
+        {
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "User-Agent": "trading-alert-platform-audit/1.0",
+        },
+    )
+    output = []
+    for row in legacy if isinstance(legacy, list) else []:
+        output.append({
+            "id": row.get("alert_id"),
+            "ticker": row.get("ticker"),
+            "market": "ITALIA" if str(row.get("market") or "").upper() == "ITALY" else row.get("market"),
+            "alert_type": row.get("condition_type"),
+            "threshold": row.get("trigger_level"),
+            "threshold_min": None,
+            "threshold_max": None,
+            "status": row.get("status"),
+            "created_at": row.get("created_at"),
+            "valid_until": row.get("expires_at"),
+            "triggered_at": row.get("triggered_at"),
+            "trigger_price": row.get("last_price"),
+            "source": "LEGACY_ARCHIVE",
+        })
+    print(f"AUDIT_SOURCE legacy_archive rows={len(output)}")
+    return output
 
 
 def yahoo_symbol(ticker: str, market: str) -> str:
