@@ -1,0 +1,24 @@
+name: Deploy Production Alert Cutover
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  migrate-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate database credential
+        run: test -n "${SUPABASE_DB_URL:-}"
+      - name: Apply production cutover
+        run: psql "${SUPABASE_DB_URL}" -v ON_ERROR_STOP=1 -f supabase/migrations/20260902_001_production_cutover.sql
+      - name: Verify operational queue
+        run: |
+          psql "${SUPABASE_DB_URL}" -v ON_ERROR_STOP=1 -Atc \
+            "select 'ACTIVE_ALERTS=' || count(*) from alert_platform.alerts where status='ACTIVE';"
