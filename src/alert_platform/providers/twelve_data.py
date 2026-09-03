@@ -35,7 +35,14 @@ class TwelveDataProvider:
         unique = tuple(dict.fromkeys(s.strip().upper() for s in symbols if s.strip()))
         if not unique:
             return ()
-        return tuple(self._get_one(symbol) for symbol in unique)
+        prices: list[MarketPrice] = []
+        for symbol in unique:
+            try:
+                prices.append(self._get_one(symbol))
+            except Exception as exc:
+                # One bad symbol/quota response must not erase valid quotes for the rest.
+                print(f"MARKET_DATA_SYMBOL_ERROR provider=TWELVE_DATA symbol={symbol} error={type(exc).__name__}:{exc}")
+        return tuple(prices)
 
     def _get_one(self, symbol: str) -> MarketPrice:
         query = urlencode({"symbol": symbol, "apikey": self.api_key})
