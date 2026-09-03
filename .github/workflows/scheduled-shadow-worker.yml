@@ -81,7 +81,7 @@ jobs:
                   if not prices:
                       raise RuntimeError('empty response')
                   quote = prices[0]
-                  print(f"MARKET_DATA_SMOKE_OK provider={name} symbol={quote.symbol} timestamp={quote.timestamp.isoformat()}")
+                  print(f"MARKET_DATA_SMOKE_OK provider={name} symbol={quote.ticker} timestamp={quote.timestamp.isoformat()}")
                   available += 1
               except Exception as exc:
                   print(f"MARKET_DATA_SMOKE_FAILED provider={name} error={type(exc).__name__}: {exc}")
