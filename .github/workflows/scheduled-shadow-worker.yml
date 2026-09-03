@@ -74,7 +74,7 @@ jobs:
           body = json.dumps({
               "ticker": "AAPL",
               "market": "USA",
-              "alert_type": "PRICE_ABOVE",
+              "alert_type": "RESISTANCE",
               "condition": marker + " guaranteed crossing; not an investment signal",
               "threshold": 0.01,
               "status": "ACTIVE",
