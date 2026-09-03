@@ -1,4 +1,4 @@
-"""Production alert evaluation and WhatsApp delivery."""
+"""Production alert evaluation and multichannel delivery."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ class LiveResult:
     errors: int = 0
     released: int = 0
     last_error: str | None = None
+    error_details: tuple[str, ...] = ()
 
 
 def is_triggered(alert_type: str, price: Decimal, threshold: Decimal | None,
@@ -47,6 +48,20 @@ def _message(alert, price: Decimal) -> str:
         f"Prezzo: {price}\nCondizione: {condition}\n"
         f"ID: {alert.id}"
     )
+
+
+def _canonical_market(value: str) -> str:
+    market = str(value or "").upper().strip()
+    if market == "ITALY":
+        return "ITALIA"
+    return market
+
+
+def _provider_symbol(ticker: str, market: str) -> str:
+    symbol = str(ticker or "").upper().strip()
+    if _canonical_market(market) == "ITALIA" and symbol and not symbol.endswith(".MI"):
+        return f"{symbol}.MI"
+    return symbol
 
 
 def run_live_cycle(repo: AlertRepository, market_hours: MarketHours, market_data: MarketDataProvider,
@@ -76,26 +91,45 @@ def run_live_cycle(repo: AlertRepository, market_hours: MarketHours, market_data
     else:
         claimed = tuple(repo.claim_due_alerts(worker_id, claim_limit))
 
-    symbols = tuple(dict.fromkeys(a.ticker.upper() for a in claimed))
+    requested_by_alert = {
+        alert.id: _provider_symbol(alert.ticker, alert.market)
+        for alert in claimed
+    }
+    symbols = tuple(dict.fromkeys(requested_by_alert.values()))
+    provider_error: str | None = None
     try:
         prices = market_data.get_prices(symbols)
-    except Exception:
+    except Exception as exc:
+        provider_error = f"MARKET_DATA_BATCH_{type(exc).__name__}: {exc}"
+        print(provider_error)
         prices = ()
     by_ticker = {p.ticker.upper(): p for p in prices}
+
     checked = triggered = sent = errors = released = 0
-    last_error: str | None = None
+    last_error: str | None = provider_error
+    error_details: list[str] = []
+
     for alert in claimed:
-        price = by_ticker.get(alert.ticker.upper())
+        requested_symbol = requested_by_alert[alert.id]
+        price = by_ticker.get(requested_symbol.upper())
         valid, code = validate_market_price(price, max_price_age_seconds=max_price_age_seconds, now=current)
         if not valid or price is None:
             errors += 1
+            detail = (
+                f"PRICE_ERROR ticker={alert.ticker} market={alert.market} "
+                f"symbol={requested_symbol} code={code or 'NO_PRICE'}"
+            )
+            error_details.append(detail)
+            last_error = detail
+            print(detail)
             repo.record_alert_run(worker_id=worker_id, alert_id=alert.id, ticker=alert.ticker,
                 price=None if price is None else price.price,
                 price_timestamp=None if price is None else price.timestamp,
-                provider=None if price is None else price.provider, trigger_hit=False, error_code=code)
+                provider=None if price is None else price.provider, trigger_hit=False, error_code=code or "NO_PRICE")
             if repo.release_alert(alert.id, worker_id, current + timedelta(minutes=5)):
                 released += 1
             continue
+
         checked += 1
         hit = is_triggered(alert.alert_type, price.price, alert.threshold, alert.threshold_min, alert.threshold_max)
         repo.record_alert_run(worker_id=worker_id, alert_id=alert.id, ticker=alert.ticker,
@@ -106,13 +140,20 @@ def run_live_cycle(repo: AlertRepository, market_hours: MarketHours, market_data
             try:
                 # Delivery happens before the irreversible ONE_SHOT transition. If the
                 # provider fails, the claim is released and retried instead of losing it.
-                send_message(_message(alert, price.price))
-                repo.create_trigger_event(worker_id, [alert.id], alert.ticker, alert.market,
+                delivery_result = send_message(_message(alert, price.price))
+                print(
+                    f"ALERT_DELIVERY_OK ticker={alert.ticker} market={alert.market} "
+                    f"price={price.price} result={delivery_result}"
+                )
+                repo.create_trigger_event(worker_id, [alert.id], alert.ticker, _canonical_market(alert.market),
                     price.price, price.timestamp, price.provider, "BUY_PREBUY_HIGH")
                 sent += 1
             except Exception as exc:
                 errors += 1
-                last_error = f"DELIVERY_{type(exc).__name__}: {exc}"
+                detail = f"DELIVERY_{type(exc).__name__} ticker={alert.ticker} market={alert.market}: {exc}"
+                error_details.append(detail)
+                last_error = detail
+                print(detail)
                 if repo.release_alert(alert.id, worker_id, current + timedelta(minutes=5)):
                     released += 1
         else:
@@ -121,4 +162,15 @@ def run_live_cycle(repo: AlertRepository, market_hours: MarketHours, market_data
                 threshold_max=alert.threshold_max)
             if repo.release_alert(alert.id, worker_id, next_check_at(current, distance, polling)):
                 released += 1
-    return LiveResult("LIVE_OK", len(claimed), checked, triggered, sent, errors, released, last_error)
+
+    return LiveResult(
+        "LIVE_OK",
+        len(claimed),
+        checked,
+        triggered,
+        sent,
+        errors,
+        released,
+        last_error,
+        tuple(error_details),
+    )
