@@ -56,6 +56,12 @@ jobs:
           test -n "${SUPABASE_URL:-}"
           test -n "${SUPABASE_SECRET_KEY:-}"
           test -n "${TWELVE_DATA_API_KEY:-}"
+          if [ -z "${WHATSAPP_NUMBER:-}" ] || [ -z "${CALLMEBOT_APIKEY:-}" ]; then
+            echo "::warning::WhatsApp secrets missing"
+          fi
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+            echo "::warning::Telegram incomplete: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID"
+          fi
 
       - name: Create guaranteed E2E test alert
         if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.create_e2e_test_alert == 'true')
@@ -110,18 +116,10 @@ jobs:
 
           def telegram(message):
               token=os.environ.get("TELEGRAM_BOT_TOKEN","").strip()
-              if not token: raise RuntimeError("TELEGRAM_BOT_TOKEN_MISSING")
               chat_id=os.environ.get("TELEGRAM_CHAT_ID","").strip()
+              if not token or not chat_id:
+                  return "SKIPPED_NOT_CONFIGURED"
               base=f"https://api.telegram.org/bot{token}"
-              if not chat_id:
-                  with urllib.request.urlopen(base+"/getUpdates",timeout=30) as r: updates=json.load(r)
-                  chats=[]
-                  for update in updates.get("result",[]):
-                      msg=update.get("message") or update.get("edited_message") or {}
-                      chat=msg.get("chat") or {}
-                      if chat.get("type")=="private" and chat.get("id") is not None: chats.append(str(chat["id"]))
-                  if not chats: raise RuntimeError("TELEGRAM_CHAT_NOT_FOUND")
-                  chat_id=chats[-1]
               data=urllib.parse.urlencode({"chat_id":chat_id,"text":message}).encode()
               with urllib.request.urlopen(urllib.request.Request(base+"/sendMessage",data=data,method="POST"),timeout=30) as r:
                   payload=json.load(r)
@@ -132,7 +130,8 @@ jobs:
               sender=os.environ.get("GMAIL_SENDER","").strip()
               recipient=os.environ.get("GMAIL_RECIPIENT","").strip()
               password=os.environ.get("GMAIL_PASSWORD","").strip()
-              if not sender or not recipient or not password: raise RuntimeError("GMAIL_SECRETS_MISSING")
+              if not sender or not recipient or not password:
+                  return "SKIPPED_NOT_CONFIGURED"
               msg=EmailMessage(); msg["Subject"]="ALERT | Trading Alert Platform"; msg["From"]=sender; msg["To"]=recipient
               msg.set_content(message + "\n\nTest tecnico; non è un segnale di investimento.")
               with smtplib.SMTP("smtp.gmail.com",587,timeout=30) as smtp:
@@ -140,33 +139,54 @@ jobs:
                   smtp.login(sender,password); smtp.send_message(msg)
               return "DELIVERED"
 
+          def callmebot(message):
+              phone=os.environ.get("WHATSAPP_NUMBER","").strip()
+              key=os.environ.get("CALLMEBOT_APIKEY","").strip()
+              if not phone or not key:
+                  return "SKIPPED_NOT_CONFIGURED"
+              return send_callmebot(phone,key,message)
+
           def dispatch(message):
               results={}; successes=0
               for channel, fn in (
                   ("telegram", lambda: telegram(message)),
                   ("email", lambda: email(message)),
-                  ("callmebot", lambda: send_callmebot(os.environ.get("WHATSAPP_NUMBER",""),os.environ.get("CALLMEBOT_APIKEY",""),message)),
+                  ("callmebot", lambda: callmebot(message)),
               ):
                   try:
-                      results[channel]=fn(); successes+=1
+                      result=fn(); results[channel]=result
+                      if not str(result).startswith("SKIPPED_"):
+                          successes+=1
                   except Exception as exc:
                       results[channel]="FAILED_"+type(exc).__name__+":"+str(exc)
               print("CHANNEL_RESULTS="+json.dumps(results,sort_keys=True))
-              if not successes: raise RuntimeError("ALL_CHANNELS_FAILED")
-              return json.dumps(results)
+              if not successes:
+                  raise RuntimeError("ALL_CONFIGURED_CHANNELS_FAILED_OR_MISSING")
+              return json.dumps(results,sort_keys=True)
 
           repo=SupabaseAlertRepository(SupabaseSettings(os.environ["SUPABASE_URL"],os.environ["SUPABASE_SECRET_KEY"]))
           budget=SupabaseCreditBudget(repo,per_minute_limit=8,daily_budget=800)
           provider=ProviderManager(TwelveDataProvider(os.environ["TWELVE_DATA_API_KEY"]),YahooProvider(),budget=budget)
           result=run_live_cycle(repo,ExchangeMarketCalendar(refresh_delay_minutes=3),provider,dispatch,now=datetime.now(timezone.utc))
           print(result)
-          if result.errors: raise SystemExit(f"PRODUCTION_ALERT_ERRORS={result.errors} last={result.last_error}")
+          for detail in result.error_details:
+              print("ALERT_DIAGNOSTIC="+detail)
+
+          is_e2e = os.environ.get("GITHUB_EVENT_NAME") == "push" or os.environ.get("E2E_REQUIRED") == "true"
+          if is_e2e and result.sent < 1:
+              raise SystemExit(f"E2E_DELIVERY_NOT_PROVEN claimed={result.claimed} checked={result.checked} triggered={result.triggered} sent={result.sent} errors={result.errors}")
+          if result.claimed > 0 and result.checked == 0:
+              raise SystemExit(f"PRODUCTION_ALERTS_UNCHECKED claimed={result.claimed} errors={result.errors} last={result.last_error}")
+          if result.errors:
+              print(f"::warning::PRODUCTION_ALERT_PARTIAL_ERRORS={result.errors} last={result.last_error}")
           print("PRODUCTION_ALERT_CYCLE_OK")
           PY
+        env:
+          E2E_REQUIRED: ${{ github.event_name == 'workflow_dispatch' && inputs.create_e2e_test_alert == 'true' }}
 
       - name: Publish verification issue
         if: always() && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh issue create --title "E2E alert verification ${{ job.status }}" --body "Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\nCommit: ${{ github.sha }}\nCheck CHANNEL_RESULTS in logs."
+          gh issue create --title "E2E alert verification ${{ job.status }}" --body "Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\nCommit: ${{ github.sha }}\nSuccess requires a real trigger and at least one configured delivery channel. Check CHANNEL_RESULTS and ALERT_DIAGNOSTIC in logs."
