@@ -1,0 +1,58 @@
+name: Telegram Bootstrap Test
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/telegram-bootstrap.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  telegram-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+    steps:
+      - name: Discover private chat and send test
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${TELEGRAM_BOT_TOKEN:-}" || { echo 'TELEGRAM_BOT_TOKEN is missing'; exit 1; }
+          python - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          token = os.environ['TELEGRAM_BOT_TOKEN']
+          base = f'https://api.telegram.org/bot{token}'
+          with urllib.request.urlopen(base + '/getUpdates', timeout=30) as response:
+              payload = json.load(response)
+          if not payload.get('ok'):
+              raise SystemExit('TELEGRAM_GET_UPDATES_FAILED')
+
+          chats = []
+          for update in payload.get('result', []):
+              message = update.get('message') or update.get('edited_message') or {}
+              chat = message.get('chat') or {}
+              if chat.get('type') == 'private' and chat.get('id') is not None:
+                  chats.append(str(chat['id']))
+          if not chats:
+              raise SystemExit('TELEGRAM_CHAT_NOT_FOUND: open the bot and send /start')
+
+          chat_id = chats[-1]
+          data = urllib.parse.urlencode({
+              'chat_id': chat_id,
+              'text': '✅ TEST Trading Alert Antonio: collegamento GitHub → Telegram operativo.',
+          }).encode()
+          request = urllib.request.Request(base + '/sendMessage', data=data, method='POST')
+          with urllib.request.urlopen(request, timeout=30) as response:
+              sent = json.load(response)
+          if not sent.get('ok'):
+              raise SystemExit('TELEGRAM_SEND_FAILED')
+          print(f'TELEGRAM_CHAT_ID={chat_id}')
+          print('TELEGRAM_TEST_SENT')
+          PY
