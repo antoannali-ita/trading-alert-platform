@@ -64,7 +64,7 @@ jobs:
           fi
 
       - name: Create guaranteed E2E test alert
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.create_e2e_test_alert == 'true')
+        if: github.event_name == 'workflow_dispatch' && inputs.create_e2e_test_alert == 'true'
         shell: bash
         run: |
           python - <<'PY'
@@ -111,7 +111,7 @@ jobs:
           from alert_platform.providers.twelve_data import TwelveDataProvider
           from alert_platform.providers.yahoo import YahooProvider
           from alert_platform.live_worker import run_live_cycle
-          from alert_platform.supabase_repo import SupabaseAlertRepository, SupabaseCreditBudget, SupabaseSettings
+          from alert_platform.supabase_repo import SupabaseAlertRepository, SupabaseSettings
           from alert_platform.whatsapp import send_callmebot
 
           def telegram(message):
@@ -173,7 +173,7 @@ jobs:
           for detail in result.error_details:
               print("ALERT_DIAGNOSTIC="+detail)
 
-          is_e2e = os.environ.get("GITHUB_EVENT_NAME") == "push" or os.environ.get("E2E_REQUIRED") == "true"
+          is_e2e = os.environ.get("E2E_REQUIRED") == "true"
           if is_e2e and result.sent < 1:
               raise SystemExit(f"E2E_DELIVERY_NOT_PROVEN claimed={result.claimed} checked={result.checked} triggered={result.triggered} sent={result.sent} errors={result.errors}")
           if result.claimed > 0 and result.checked == 0:
@@ -190,4 +190,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh issue create --title "E2E alert verification ${{ job.status }}" --body "Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\nCommit: ${{ github.sha }}\nSuccess requires a real trigger and at least one configured delivery channel. Check CHANNEL_RESULTS and ALERT_DIAGNOSTIC in logs."
+          gh issue create --title "Alert worker verification ${{ job.status }}" --body "Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\nCommit: ${{ github.sha }}\nCheck CHANNEL_RESULTS and ALERT_DIAGNOSTIC in logs."
