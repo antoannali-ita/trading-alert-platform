@@ -56,3 +56,5 @@ jobs:
           print(f'TELEGRAM_CHAT_ID={chat_id}')
           print('TELEGRAM_TEST_SENT')
           PY
+
+# bootstrap-run: 2026-09-03T14:12Z
