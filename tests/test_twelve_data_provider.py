@@ -42,32 +42,52 @@ def test_deduplicates_symbols_and_parses_quote_timestamp():
     assert prices[0].timestamp == datetime.fromtimestamp(ts, tz=timezone.utc)
 
 
-def test_provider_error_is_normalized():
+def test_get_one_normalizes_provider_error():
     provider = TwelveDataProvider("secret")
     with patch(
         "alert_platform.providers.twelve_data.urlopen",
         return_value=FakeResponse({"status": "error", "message": "quota exceeded"}),
     ):
         try:
-            provider.get_prices(["TSM"])
+            provider._get_one("TSM")
         except TwelveDataError as exc:
             assert "quota exceeded" in str(exc)
         else:
             raise AssertionError("provider error not raised")
 
 
-def test_missing_timestamp_is_rejected():
+def test_get_one_rejects_missing_timestamp():
     provider = TwelveDataProvider("secret")
     with patch(
         "alert_platform.providers.twelve_data.urlopen",
         return_value=FakeResponse({"close": "100.0"}),
     ):
         try:
-            provider.get_prices(["TSM"])
+            provider._get_one("TSM")
         except TwelveDataError as exc:
             assert "no timestamp" in str(exc)
         else:
             raise AssertionError("missing provider timestamp should be rejected")
+
+
+def test_get_prices_isolates_symbol_error_from_batch(capsys):
+    ts = 1788264000
+    payloads = {
+        "TSM": {"status": "error", "message": "quota exceeded"},
+        "AAPL": {"close": "230.10", "timestamp": ts, "is_market_open": True},
+    }
+
+    def fake_urlopen(request, timeout):
+        symbol = "TSM" if "TSM" in request.full_url else "AAPL"
+        return FakeResponse(payloads[symbol])
+
+    provider = TwelveDataProvider("secret")
+    with patch("alert_platform.providers.twelve_data.urlopen", side_effect=fake_urlopen):
+        prices = provider.get_prices(["TSM", "AAPL"])
+
+    # A single bad symbol must not erase valid quotes for the rest of the batch.
+    assert [p.ticker for p in prices] == ["AAPL"]
+    assert "MARKET_DATA_SYMBOL_ERROR" in capsys.readouterr().out
 
 
 def test_api_key_required():
