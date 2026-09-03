@@ -34,7 +34,14 @@ class YahooProvider:
 
     def get_prices(self, symbols: Sequence[str]) -> Sequence[MarketPrice]:
         unique = tuple(dict.fromkeys(s.strip().upper() for s in symbols if s.strip()))
-        return tuple(self._get_one(symbol) for symbol in unique)
+        prices: list[MarketPrice] = []
+        for symbol in unique:
+            try:
+                prices.append(self._get_one(symbol))
+            except Exception as exc:
+                # One malformed/delisted symbol must never poison the whole fallback batch.
+                print(f"MARKET_DATA_SYMBOL_ERROR provider=YAHOO symbol={symbol} error={type(exc).__name__}:{exc}")
+        return tuple(prices)
 
     def _get_one(self, symbol: str) -> MarketPrice:
         url = f"{self.base_url}/{quote(symbol)}?interval=1m&range=1d"
