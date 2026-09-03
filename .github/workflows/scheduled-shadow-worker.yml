@@ -68,7 +68,7 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
-          import json, os, urllib.request
+          import json, os, urllib.error, urllib.request
           from datetime import datetime, timedelta, timezone
           marker = "E2E_TEST_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
           body = json.dumps({
@@ -94,9 +94,14 @@ jobs:
                   "Content-Profile": "alert_platform",
                   "Prefer": "return=representation"
               })
-          with urllib.request.urlopen(req, timeout=30) as response:
-              row = json.load(response)[0]
-          print("E2E_ALERT_CREATED id=" + row["id"] + " marker=" + marker)
+          try:
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  row = json.load(response)[0]
+              print("E2E_ALERT_CREATED id=" + row["id"] + " marker=" + marker)
+          except urllib.error.HTTPError as exc:
+              if exc.code != 409:
+                  raise
+              print("E2E_ALERT_REUSED existing equivalent active alert")
           PY
 
       - name: Run production alert cycle with multichannel delivery
