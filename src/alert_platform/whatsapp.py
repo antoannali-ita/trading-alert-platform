@@ -31,9 +31,10 @@ def send_callmebot(phone: str, api_key: str, message: str, *, attempts: int = 3)
                 # WhatsApp (for example after authorization expires).
                 if "message queued" in body:
                     return "PROVIDER_QUEUED"
-                raise WhatsAppError(
-                    f"CallMeBot returned an unrecognized response (HTTP {response.status})"
-                )
+                # Some CallMeBot responses are HTTP 200 without the historical
+                # queue acknowledgement. Keep processing other alerts, but make
+                # the weaker transport outcome visible to operations.
+                return "PROVIDER_ACCEPTED_UNCONFIRMED"
         except WhatsAppError:
             raise
         except (HTTPError, URLError, TimeoutError, OSError) as exc:
