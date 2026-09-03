@@ -29,6 +29,12 @@ class ExchangeMarketCalendar:
         "ITALIA": "XMIL",
     }
 
+    MARKET_ALIASES = {
+        "ITALY": "ITALIA",
+        "ITALIA": "ITALIA",
+        "USA": "USA",
+    }
+
     def __init__(self, *, refresh_delay_minutes: int = 3):
         self.refresh_delay_minutes = refresh_delay_minutes
         self._calendars = {
@@ -36,10 +42,15 @@ class ExchangeMarketCalendar:
             for market, code in self.CALENDAR_BY_MARKET.items()
         }
 
+    @classmethod
+    def _market_key(cls, market: str) -> str:
+        raw = str(market or "").upper().strip()
+        return cls.MARKET_ALIASES.get(raw, raw)
+
     def session_for(self, market: str, now: datetime) -> SessionWindow | None:
         if now.tzinfo is None:
             raise ValueError("now must be timezone-aware")
-        key = market.upper()
+        key = self._market_key(market)
         calendar = self._calendars.get(key)
         if calendar is None:
             raise ValueError(f"unsupported market: {market}")
@@ -74,5 +85,8 @@ class ExchangeMarketCalendar:
     def is_market_open(self, market: str, now: datetime) -> bool:
         if now.tzinfo is None:
             raise ValueError("now must be timezone-aware")
-        calendar = self._calendars[market.upper()]
+        key = self._market_key(market)
+        calendar = self._calendars.get(key)
+        if calendar is None:
+            return False
         return bool(calendar.is_open_on_minute(now))
