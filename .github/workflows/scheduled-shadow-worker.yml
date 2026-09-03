@@ -111,6 +111,12 @@ jobs:
              order by market, priority desc, next_check_at
              limit 50;"
 
+          psql "${SUPABASE_DB_URL}" -v ON_ERROR_STOP=1 -c "
+            update alert_platform.alerts
+               set status = 'CANCELLED', updated_at = now()
+             where condition = 'E2E_WHATSAPP_TEST'
+               and status in ('ACTIVE','CLAIMED');"
+
           TEST_TICKER=$(psql "${SUPABASE_DB_URL}" -v ON_ERROR_STOP=1 -Atc "
             select ticker
               from alert_platform.alerts
@@ -137,11 +143,10 @@ jobs:
           python - <<'PY'
           import os
           from datetime import datetime, timezone
+          from decimal import Decimal
 
           from alert_platform.market_calendar import ExchangeMarketCalendar
-          from alert_platform.provider_manager import ProviderManager
-          from alert_platform.providers.twelve_data import TwelveDataProvider
-          from alert_platform.providers.yahoo import YahooProvider
+          from alert_platform.market_data import MarketPrice
           from alert_platform.live_worker import run_live_cycle
           from alert_platform.supabase_repo import (
               SupabaseAlertRepository,
@@ -156,15 +161,25 @@ jobs:
                   os.environ['SUPABASE_SECRET_KEY'],
               )
           )
-          provider = ProviderManager(
-              TwelveDataProvider(os.environ['TWELVE_DATA_API_KEY']),
-              YahooProvider(),
-              budget=SupabaseCreditBudget(repo, per_minute_limit=8, daily_budget=800),
-          )
+          class SyntheticMarketData:
+              def get_prices(self, symbols):
+                  now = datetime.now(timezone.utc)
+                  return tuple(
+                      MarketPrice(
+                          ticker=symbol,
+                          price=Decimal('100.00'),
+                          timestamp=now,
+                          market_status='OPEN',
+                          provider='E2E_SYNTHETIC',
+                          data_quality='TEST',
+                      )
+                      for symbol in symbols
+                  )
+
           result = run_live_cycle(
               repo,
               ExchangeMarketCalendar(refresh_delay_minutes=3),
-              provider,
+              SyntheticMarketData(),
               lambda message: send_callmebot(
                   os.environ['WHATSAPP_NUMBER'],
                   os.environ['CALLMEBOT_APIKEY'],
