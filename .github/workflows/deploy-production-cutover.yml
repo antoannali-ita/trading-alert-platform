@@ -2,6 +2,12 @@ name: Deploy Production Alert Cutover
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'supabase/migrations/20260902_001_production_cutover.sql'
+      - '.github/workflows/deploy-production-cutover.yml'
 
 permissions:
   contents: read
