@@ -56,7 +56,25 @@ def run_live_cycle(repo: AlertRepository, market_hours: MarketHours, market_data
     if not market_hours.any_relevant_market_open(current):
         return LiveResult(status="MARKET_CLOSED")
     worker_id = uuid4()
-    claimed = tuple(repo.claim_due_alerts(worker_id, claim_limit))
+
+    # Do not claim alerts belonging to a closed exchange. Otherwise, while Milan
+    # is open and the US is closed, stale US quotes are incorrectly counted as
+    # production errors. Use the repository's atomic exclusion RPC when both the
+    # calendar and repository support it; keep the generic fallback for tests and
+    # alternate repository implementations.
+    market_open = getattr(market_hours, "is_market_open", None)
+    exclusion_claim = getattr(repo, "claim_due_alerts_excluding_markets", None)
+    closed_markets: tuple[str, ...] = ()
+    if callable(market_open) and callable(exclusion_claim):
+        closed_markets = tuple(
+            market for market in ("USA", "ITALIA")
+            if not market_open(market, current)
+        )
+    if closed_markets and callable(exclusion_claim):
+        claimed = tuple(exclusion_claim(worker_id, claim_limit, closed_markets))
+    else:
+        claimed = tuple(repo.claim_due_alerts(worker_id, claim_limit))
+
     symbols = tuple(dict.fromkeys(a.ticker.upper() for a in claimed))
     try:
         prices = market_data.get_prices(symbols)
