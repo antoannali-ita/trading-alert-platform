@@ -59,7 +59,7 @@ jobs:
           test -n "${WHATSAPP_NUMBER:-}"
           test -n "${CALLMEBOT_APIKEY:-}"
 
-      - name: Verify WhatsApp transport on deployment
+      - name: Verify WhatsApp transport classification on deployment
         if: github.event_name == 'push'
         shell: bash
         run: |
