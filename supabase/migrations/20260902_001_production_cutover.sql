@@ -5,6 +5,41 @@ grant select, insert, update on all tables in schema alert_platform to service_r
 alter default privileges in schema alert_platform
   grant select, insert, update on tables to service_role;
 
+-- Backward-compatible RPC used by the production worker. The original
+-- release_alert function also accepts price metadata; the worker contract
+-- releases claims with the three arguments below. Delegate to the canonical
+-- six-argument function and leave price metadata unchanged for this path.
+create or replace function alert_platform.release_alert(
+  p_alert_id uuid,
+  p_worker_id uuid,
+  p_next_check_at timestamptz
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = alert_platform, pg_temp
+as $$
+declare
+  v_updated integer;
+begin
+  update alert_platform.alerts
+     set status = 'ACTIVE',
+         next_check_at = p_next_check_at,
+         claimed_at = null,
+         claimed_by = null,
+         claim_expires_at = null
+   where id = p_alert_id
+     and status = 'CLAIMED'
+     and claimed_by = p_worker_id;
+
+  get diagnostics v_updated = row_count;
+  return v_updated > 0;
+end;
+$$;
+
+grant execute on function alert_platform.release_alert(uuid, uuid, timestamptz) to service_role;
+revoke all on function alert_platform.release_alert(uuid, uuid, timestamptz) from anon, authenticated;
+
 update alert_platform.alerts
    set market = 'ITALIA'
  where upper(market) = 'ITALY';
