@@ -165,8 +165,9 @@ jobs:
               return json.dumps(results,sort_keys=True)
 
           repo=SupabaseAlertRepository(SupabaseSettings(os.environ["SUPABASE_URL"],os.environ["SUPABASE_SECRET_KEY"]))
-          budget=SupabaseCreditBudget(repo,per_minute_limit=8,daily_budget=800)
-          provider=ProviderManager(TwelveDataProvider(os.environ["TWELVE_DATA_API_KEY"]),YahooProvider(),budget=budget)
+          # Yahoo is temporarily primary because delayed Twelve Data timestamps
+          # are rejected by the 180-second production freshness gate.
+          provider=ProviderManager(YahooProvider(),TwelveDataProvider(os.environ["TWELVE_DATA_API_KEY"]),primary_name="YAHOO")
           result=run_live_cycle(repo,ExchangeMarketCalendar(refresh_delay_minutes=3),provider,dispatch,now=datetime.now(timezone.utc))
           print(result)
           for detail in result.error_details:
