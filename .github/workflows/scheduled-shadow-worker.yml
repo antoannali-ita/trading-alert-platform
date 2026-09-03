@@ -59,6 +59,36 @@ jobs:
           test -n "${WHATSAPP_NUMBER:-}"
           test -n "${CALLMEBOT_APIKEY:-}"
 
+      - name: Smoke-test market data providers
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+
+          from alert_platform.providers.twelve_data import TwelveDataProvider
+          from alert_platform.providers.yahoo import YahooProvider
+
+          providers = (
+              ('TWELVE_DATA', TwelveDataProvider(os.environ['TWELVE_DATA_API_KEY'])),
+              ('YAHOO', YahooProvider()),
+          )
+          available = 0
+          for name, provider in providers:
+              try:
+                  prices = tuple(provider.get_prices(('AAPL',)))
+                  if not prices:
+                      raise RuntimeError('empty response')
+                  quote = prices[0]
+                  print(f"MARKET_DATA_SMOKE_OK provider={name} symbol={quote.symbol} timestamp={quote.timestamp.isoformat()}")
+                  available += 1
+              except Exception as exc:
+                  print(f"MARKET_DATA_SMOKE_FAILED provider={name} error={type(exc).__name__}: {exc}")
+          if available == 0:
+              raise SystemExit('NO_MARKET_DATA_PROVIDER_AVAILABLE')
+          PY
+
       - name: Run production alert cycle
         shell: bash
         run: |
@@ -112,5 +142,3 @@ jobs:
           gh issue create \
             --title "Alert cutover verification ${{ job.status }}" \
             --body "Workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\nCommit: ${{ github.sha }}\nResult: ${{ job.status }}"
-
-# Production market gating verification 2026-09-03
