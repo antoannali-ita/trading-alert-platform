@@ -50,3 +50,10 @@ def test_delivery_failure_releases_for_retry():
     result = run_live_cycle(repo, OpenMarket(), Provider(), fail, now=NOW)
     assert result.sent == 0 and result.errors == 1 and result.released == 1
     assert not repo.events
+
+
+def test_delivery_failure_exposes_sanitized_diagnostic():
+    repo = Repo()
+    def fail(_): raise RuntimeError("provider rejected request")
+    result = run_live_cycle(repo, OpenMarket(), Provider(), fail, now=NOW)
+    assert result.last_error == "DELIVERY_RuntimeError: provider rejected request"

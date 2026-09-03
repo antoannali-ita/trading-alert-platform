@@ -25,7 +25,15 @@ def send_callmebot(phone: str, api_key: str, message: str, *, attempts: int = 3)
                 body = response.read().decode("utf-8", errors="replace").lower()
                 if response.status >= 400 or any(x in body for x in ("error", "invalid", "not authorized", "failed")):
                     raise WhatsAppError(f"CallMeBot rejected request (HTTP {response.status})")
-                return "PROVIDER_ACCEPTED"
+                # CallMeBot acknowledges asynchronous submission with "Message
+                # queued".  Do not call that a delivered message: the provider
+                # can accept the HTTP request and still fail to deliver it to
+                # WhatsApp (for example after authorization expires).
+                if "message queued" in body:
+                    return "PROVIDER_QUEUED"
+                raise WhatsAppError(
+                    f"CallMeBot returned an unrecognized response (HTTP {response.status})"
+                )
         except WhatsAppError:
             raise
         except (HTTPError, URLError, TimeoutError, OSError) as exc:

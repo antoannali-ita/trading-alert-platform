@@ -22,6 +22,7 @@ class LiveResult:
     sent: int = 0
     errors: int = 0
     released: int = 0
+    last_error: str | None = None
 
 
 def is_triggered(alert_type: str, price: Decimal, threshold: Decimal | None,
@@ -82,6 +83,7 @@ def run_live_cycle(repo: AlertRepository, market_hours: MarketHours, market_data
         prices = ()
     by_ticker = {p.ticker.upper(): p for p in prices}
     checked = triggered = sent = errors = released = 0
+    last_error: str | None = None
     for alert in claimed:
         price = by_ticker.get(alert.ticker.upper())
         valid, code = validate_market_price(price, max_price_age_seconds=max_price_age_seconds, now=current)
@@ -108,8 +110,9 @@ def run_live_cycle(repo: AlertRepository, market_hours: MarketHours, market_data
                 repo.create_trigger_event(worker_id, [alert.id], alert.ticker, alert.market,
                     price.price, price.timestamp, price.provider, "BUY_PREBUY_HIGH")
                 sent += 1
-            except Exception:
+            except Exception as exc:
                 errors += 1
+                last_error = f"DELIVERY_{type(exc).__name__}: {exc}"
                 if repo.release_alert(alert.id, worker_id, current + timedelta(minutes=5)):
                     released += 1
         else:
@@ -118,4 +121,4 @@ def run_live_cycle(repo: AlertRepository, market_hours: MarketHours, market_data
                 threshold_max=alert.threshold_max)
             if repo.release_alert(alert.id, worker_id, next_check_at(current, distance, polling)):
                 released += 1
-    return LiveResult("LIVE_OK", len(claimed), checked, triggered, sent, errors, released)
+    return LiveResult("LIVE_OK", len(claimed), checked, triggered, sent, errors, released, last_error)
