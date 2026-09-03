@@ -113,4 +113,4 @@ jobs:
             --title "Alert cutover verification ${{ job.status }}" \
             --body "Workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\nCommit: ${{ github.sha }}\nResult: ${{ job.status }}"
 
-# Production RPC compatibility verified 2026-09-03
+# Production market gating verification 2026-09-03
