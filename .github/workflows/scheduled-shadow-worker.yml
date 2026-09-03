@@ -59,6 +59,26 @@ jobs:
           test -n "${WHATSAPP_NUMBER:-}"
           test -n "${CALLMEBOT_APIKEY:-}"
 
+      - name: Verify WhatsApp transport on deployment
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from datetime import datetime, timezone
+
+          from alert_platform.whatsapp import send_callmebot
+
+          stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
+          receipt = send_callmebot(
+              os.environ['WHATSAPP_NUMBER'],
+              os.environ['CALLMEBOT_APIKEY'],
+              f"TEST Alert Platform {stamp} - verifica trasporto GitHub/CallMeBot",
+          )
+          print(f"WHATSAPP_TRANSPORT_RESULT={receipt}")
+          PY
+
       - name: Smoke-test market data providers
         if: github.event_name == 'push'
         shell: bash
