@@ -22,12 +22,17 @@ def send_callmebot(phone: str, api_key: str, message: str, *, attempts: int = 3)
     for attempt in range(1, max(1, attempts) + 1):
         try:
             with urlopen(url, timeout=30) as response:
-                raw_body = response.read().decode("utf-8", errors="replace")
-                # TEMP DEBUG: diagnosing why deliveries land as PROVIDER_ACCEPTED_UNCONFIRMED.
-                print(f"CALLMEBOT_RAW_RESPONSE status={response.status} body={raw_body!r}")
-                body = raw_body.lower()
-                if response.status >= 400 or any(x in body for x in ("error", "invalid", "not authorized", "failed")):
-                    raise WhatsAppError(f"CallMeBot rejected request (HTTP {response.status})")
+                body = response.read().decode("utf-8", errors="replace").lower()
+                # "Message not sent"/"messages left" cover CallMeBot's free-tier
+                # daily quota exhaustion, which is an explicit rejection but does
+                # not contain "error"/"invalid"/"not authorized"/"failed".
+                if response.status >= 400 or any(
+                    x in body for x in (
+                        "error", "invalid", "not authorized", "failed",
+                        "message not sent", "messages left",
+                    )
+                ):
+                    raise WhatsAppError(f"CallMeBot rejected request (HTTP {response.status}): {body[:200]}")
                 # CallMeBot acknowledges asynchronous submission with "Message
                 # queued".  Do not call that a delivered message: the provider
                 # can accept the HTTP request and still fail to deliver it to
