@@ -1,0 +1,111 @@
+name: Multichannel Delivery Test
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/multichannel-delivery-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  delivery-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Test Telegram
+        id: telegram
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          token=os.environ.get('TELEGRAM_BOT_TOKEN','').strip()
+          chat_id=os.environ.get('TELEGRAM_CHAT_ID','').strip()
+          if not token or not chat_id:
+              raise SystemExit('TELEGRAM_SECRETS_MISSING')
+          data=urllib.parse.urlencode({
+              'chat_id':chat_id,
+              'text':'✅ TEST MULTICANALE — Telegram operativo. Alert Platform.',
+          }).encode()
+          req=urllib.request.Request(
+              f'https://api.telegram.org/bot{token}/sendMessage', data=data, method='POST')
+          with urllib.request.urlopen(req,timeout=30) as response:
+              payload=json.load(response)
+          if not payload.get('ok'):
+              raise SystemExit('TELEGRAM_SEND_FAILED')
+          print('TELEGRAM_DELIVERED')
+          PY
+
+      - name: Test email
+        id: email
+        if: always()
+        continue-on-error: true
+        env:
+          GMAIL_SENDER: ${{ secrets.GMAIL_SENDER }}
+          GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT }}
+          GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+        run: |
+          python - <<'PY'
+          import os, smtplib, ssl
+          from email.message import EmailMessage
+          sender=os.environ.get('GMAIL_SENDER','').strip()
+          recipient=os.environ.get('GMAIL_RECIPIENT','').strip()
+          password=os.environ.get('GMAIL_PASSWORD','').strip()
+          if not sender or not recipient or not password:
+              raise SystemExit('GMAIL_SECRETS_MISSING')
+          msg=EmailMessage()
+          msg['Subject']='TEST MULTICANALE | Trading Alert Platform'
+          msg['From']=sender
+          msg['To']=recipient
+          msg.set_content(
+              'TEST MULTICANALE\n\n'
+              'Il canale e-mail della Trading Alert Platform è operativo.\n'
+              'Questo è un test tecnico, non un segnale di acquisto.'
+          )
+          with smtplib.SMTP('smtp.gmail.com',587,timeout=30) as smtp:
+              smtp.ehlo()
+              smtp.starttls(context=ssl.create_default_context())
+              smtp.ehlo()
+              smtp.login(sender,password)
+              smtp.send_message(msg)
+          print('EMAIL_DELIVERED')
+          PY
+
+      - name: Test CallMeBot
+        id: callmebot
+        if: always()
+        continue-on-error: true
+        env:
+          WHATSAPP_NUMBER: ${{ secrets.WHATSAPP_NUMBER }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+        run: |
+          PYTHONPATH=src python - <<'PY'
+          import os
+          from alert_platform.whatsapp import send_callmebot
+          result=send_callmebot(
+              os.environ.get('WHATSAPP_NUMBER',''),
+              os.environ.get('CALLMEBOT_APIKEY',''),
+              'TEST MULTICANALE - CallMeBot / Alert Platform',
+          )
+          print(f'CALLMEBOT_RESULT={result}')
+          PY
+
+      - name: Verify required channels
+        if: always()
+        env:
+          TELEGRAM_RESULT: ${{ steps.telegram.outcome }}
+          EMAIL_RESULT: ${{ steps.email.outcome }}
+          CALLMEBOT_RESULT: ${{ steps.callmebot.outcome }}
+        run: |
+          echo "CHANNEL_RESULTS telegram=${TELEGRAM_RESULT} email=${EMAIL_RESULT} callmebot=${CALLMEBOT_RESULT}"
+          test "${TELEGRAM_RESULT}" = success
+          test "${EMAIL_RESULT}" = success
